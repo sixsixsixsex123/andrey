@@ -1,0 +1,13 @@
+# Положите рядом скачанный из Colab файл модели и переименуйте его в twin.gguf, затем:
+#   ollama create twin -f Modelfile
+FROM ./twin.gguf
+
+TEMPLATE """{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""
+
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+PARAMETER temperature 0.7
+PARAMETER repeat_penalty 1.1
