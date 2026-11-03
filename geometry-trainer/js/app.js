@@ -22,7 +22,8 @@
     log: [],          // { node, method } — посещённые вопросы в порядке прохождения
   });
 
-  let S = load() || fresh();
+  let S = Object.assign(fresh(), load() || {});
+  if (!NODES[S.node]) S = fresh();
 
   function load() {
     try {
@@ -38,7 +39,10 @@
     } catch (e) { /* хранилище недоступно — работаем без сохранения */ }
   }
 
-  const qs = (id) => (S.q[id] ||= { wrong: 0, hints: 0, solved: false, picked: [], order: null, hintOpen: false });
+  const qs = (id) => {
+    if (!S.q[id]) S.q[id] = { wrong: 0, hints: 0, solved: false, solvedEver: false, okIdx: null, routed: false, picked: [], order: null, hintOpen: false };
+    return S.q[id];
+  };
 
   /* ---------------- Утилиты ---------------- */
 
@@ -97,6 +101,8 @@
   function updateCounters(bump) {
     elWrong.textContent = S.wrong;
     elHints.textContent = S.hints;
+    elWrong.nextElementSibling.textContent = plural(S.wrong, "ошибка", "ошибки", "ошибок");
+    elHints.nextElementSibling.textContent = plural(S.hints, "подсказка", "подсказки", "подсказок");
     if (bump) {
       const el = bump === "wrong" ? elWrong.parentElement : elHints.parentElement;
       el.classList.remove("bump");
@@ -120,9 +126,10 @@
       st.solved = false;
       st.hintOpen = false;
       st.order = null;
+      st.okIdx = null;
       if (!S.log.some((l) => l.node === id)) S.log.push({ node: id, method: node.method || "draw" });
     }
-    if (id === "finish" && !S.finishedAt) S.finishedAt = Date.now();
+    if (id === "finish") S.finishedAt = Date.now();
     S.node = id;
     save();
     render();
@@ -258,6 +265,10 @@
     const hintBtn = root.querySelector("[data-hint]");
     if (hintBtn) hintBtn.addEventListener("click", () => showHint(id, q, fb, true));
     if (st.hintOpen) showHint(id, q, fb, false);
+    if (st.solved && st.okIdx != null) {
+      const okBtn = root.querySelector(`.opt[data-i="${st.okIdx}"]`);
+      if (okBtn) showSuccess(q, st, okBtn, root, fb, false);
+    }
     return frag;
   }
 
@@ -278,33 +289,19 @@
     const o = q.options[i];
 
     if (o.route) {
+      st.routed = true;
+      save();
       go(o.to);
       return;
     }
 
     if (o.ok) {
       st.solved = true;
+      st.solvedEver = true;
+      st.okIdx = i;
+      if (q.completes && !S.done.includes(q.completes)) S.done.push(q.completes);
       save();
-      btn.classList.add("is-right");
-      btn.disabled = true;
-      btn.querySelector(".opt-state").innerHTML = ICONS.check;
-      root.querySelectorAll(".opt").forEach((b) => { if (b !== btn) { b.disabled = true; b.classList.add("is-dim"); } });
-      const hb = root.querySelector("[data-hint]");
-      if (hb) hb.disabled = true;
-      if (q.completes && !S.done.includes(q.completes)) { S.done.push(q.completes); save(); }
-      fb.querySelectorAll(".fb-wrong").forEach((n) => n.remove());
-      const ok = h(`
-        <div class="fb fb-ok">
-          <div class="fb-icon">${ICONS.check}</div>
-          <div class="fb-body">${q.success || "Верно!"}
-            ${st.wrong === 0 ? `<div class="fb-meta">С первой попытки 🎯</div>` : `<div class="fb-meta">Ошибок на этом шаге: ${st.wrong}</div>`}
-          </div>
-        </div>
-        <div class="actions"><button class="btn btn-primary" data-next>${q.nextLabel || "Далее"} ${ICONS.arrow}</button></div>`);
-      fb.appendChild(ok);
-      math(fb);
-      fb.querySelector("[data-next]").addEventListener("click", () => go(q.next));
-      fb.querySelector(".fb-ok").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showSuccess(q, st, btn, root, fb, true);
       return;
     }
 
@@ -331,6 +328,28 @@
     math(fb);
     if (o.openHint && q.hint) showHint(id, q, fb, false);
     fb.querySelector(".fb-wrong").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function showSuccess(q, st, btn, root, fb, animate) {
+    btn.classList.add("is-right");
+    btn.disabled = true;
+    btn.querySelector(".opt-state").innerHTML = ICONS.check;
+    root.querySelectorAll(".opt").forEach((b) => { if (b !== btn) { b.disabled = true; b.classList.add("is-dim"); } });
+    const hb = root.querySelector("[data-hint]");
+    if (hb) hb.disabled = true;
+    fb.querySelectorAll(".fb-wrong").forEach((n) => n.remove());
+    const ok = h(`
+      <div class="fb fb-ok">
+        <div class="fb-icon">${ICONS.check}</div>
+        <div class="fb-body">${q.success || "Верно!"}
+          ${st.picked.length === 0 ? `<div class="fb-meta">С первой попытки 🎯</div>` : `<div class="fb-meta">Неверных попыток на этом шаге: ${st.picked.length}</div>`}
+        </div>
+      </div>
+      <div class="actions"><button class="btn btn-primary" data-next>${q.nextLabel || "Далее"} ${ICONS.arrow}</button></div>`);
+    fb.appendChild(ok);
+    if (window.renderMathInElement) math(fb);
+    fb.querySelector("[data-next]").addEventListener("click", () => go(q.next));
+    if (animate) fb.querySelector(".fb-ok").scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function showHint(id, q, fb, count) {
@@ -397,7 +416,9 @@
     ];
     const rows = (gid) => S.log.filter((l) => l.method === gid).map((l) => {
       const q = NODES[l.node], st = S.q[l.node] || {};
-      const res = st.wrong === 0 && st.hints === 0 ? `<span class="tag tag-ok">с первой попытки</span>`
+      const res = !st.solvedEver
+        ? (st.routed ? `<span class="tag tag-info">решён по шагам</span>` : `<span class="tag tag-warn">не решён</span>`)
+        : st.wrong === 0 && st.hints === 0 ? `<span class="tag tag-ok">с первой попытки</span>`
         : st.wrong === 0 ? `<span class="tag tag-warn">с подсказкой</span>`
         : `<span class="tag tag-bad">${st.wrong} ${plural(st.wrong, "ошибка", "ошибки", "ошибок")}</span>`;
       return `<tr><td class="td-q">${q.title}</td><td class="num">${st.wrong || 0}</td><td class="num">${st.hints || 0}</td><td>${res}</td></tr>`;
@@ -416,8 +437,10 @@
       </div>`;
     }).join("");
 
-    const total = S.log.length;
-    const clean = S.log.filter((l) => { const st = S.q[l.node] || {}; return !st.wrong && !st.hints; }).length;
+    // «решён по шагам» (выбран пошаговый путь) в процент не входит
+    const counted = S.log.filter((l) => { const st = S.q[l.node] || {}; return st.solvedEver || st.wrong || !st.routed; });
+    const total = counted.length;
+    const clean = counted.filter((l) => { const st = S.q[l.node] || {}; return st.solvedEver && !st.wrong && !st.hints; }).length;
     const pct = total ? Math.round((clean / total) * 100) : 0;
     const grade = S.wrong === 0 && S.hints === 0 ? "Безупречно!" : pct >= 75 ? "Отличная работа!" : pct >= 50 ? "Хороший результат" : "Есть над чем поработать";
     const time = S.startedAt ? fmtTime((S.finishedAt || Date.now()) - S.startedAt) : "—";
@@ -436,7 +459,7 @@
           <div class="stat-row">
             <div class="stat"><span class="stat-num danger">${S.wrong}</span><span class="stat-lbl">${plural(S.wrong, "неверный ответ", "неверных ответа", "неверных ответов")}</span></div>
             <div class="stat"><span class="stat-num warn">${S.hints}</span><span class="stat-lbl">${plural(S.hints, "подсказка", "подсказки", "подсказок")}</span></div>
-            <div class="stat"><span class="stat-num ok">${S.done.length}</span><span class="stat-lbl">${plural(S.done.length, "способ", "способа", "способов")} решено</span></div>
+            <div class="stat"><span class="stat-num ok">${S.done.length}</span><span class="stat-lbl">${plural(S.done.length, "способ решён", "способа решено", "способов решено")}</span></div>
             <div class="stat"><span class="stat-num">${time}</span><span class="stat-lbl">время</span></div>
           </div>
         </div>
@@ -484,8 +507,7 @@
     if (S.node !== "start") go("methods");
   });
 
-  // KaTeX подгружается с defer — дорисовываем формулы, когда он готов
-  window.addEventListener("load", () => math(document.body));
+  math(drawer);
 
   render();
 })();
